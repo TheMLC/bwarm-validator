@@ -31,10 +31,16 @@ import org.joda.time.format.ISODateTimeFormat;
 public class BWARMValidator {
 
 	private String BASE_LOCATION = "";
-
 	private HashMap<String, Integer> recurringMessages = new HashMap<String, Integer>();
-
 	BufferedWriter logger = null;
+	BufferedWriter summary = null;
+
+	AVSHelper PartyRoles = null;
+	AVSHelper RightShareTypes = null;
+	AVSHelper RightTypes = null;
+	AVSHelper Territories = null;
+	AVSHelper TitleTypes = null;
+	AVSHelper UseTypes = null;
 
 	private final Logger LOGGER = LogManager.getLogger();
 
@@ -46,7 +52,7 @@ public class BWARMValidator {
 			{ "ComposerCatalogNumber", "false", "string" },
 			{ "NominalDuration", "false", "duration" },
 			{ "HasRightsInDispute", "true", "boolean" },
-			{ "TerritoryOfPublicDomain", "false", "string" },
+			{ "TerritoryOfPublicDomain", "false", "avs:Territories", "true" },
 			{ "IsArrangementOfTraditionalWork", "true", "boolean" },
 			{ "AlternativeWorkForUsStatutoryReversion", "false", "string" },
 			{ "UsStatutoryReversionDate", "false", "date" }
@@ -56,7 +62,7 @@ public class BWARMValidator {
 			{ "FeedProvidersWorkId", "true", "string" },
 			{ "AlternativeTitle", "true", "string" },
 			{ "LanguageAndScriptCode", "false", "string" },
-			{ "TitleType", "false", "string" }
+			{ "TitleType", "false", "avs:TitleTypes" }
 	};
 
 	private String[][] WorkIdentifiers = {
@@ -87,15 +93,15 @@ public class BWARMValidator {
 			{ "FeedProvidersWorkRightShareId", "true", "string" },
 			{ "FeedProvidersWorkId", "true", "string" },
 			{ "FeedProvidersPartyId", "true", "string" },
-			{ "PartyRole", "false", "string" },
+			{ "PartyRole", "false", "avs:PartyRoles" },
 			{ "RightSharePercentage", "false", "number" },
-			{ "RightShareType", "false", "string" },
-			{ "RightsType", "false", "string" },
+			{ "RightShareType", "false", "avs:RightShareTypes", "true" },
+			{ "RightsType", "false", "avs:RightTypes", "true" },
 			{ "ValidityStartDate", "false", "date" },
 			{ "ValidityEndDate", "false", "date" },
 			{ "FeedProvidersParentWorkRightShareId", "false", "string" },
-			{ "TerritoryCode", "false", "string" },
-			{ "UseType", "false", "string" }
+			{ "TerritoryCode", "false", "avs:TerritoryCodes", "true" },
+			{ "UseType", "false", "avs:UseTypes", "true" }
 	};
 
 	private String[][] Recordings = {
@@ -120,7 +126,7 @@ public class BWARMValidator {
 			{ "FeedProvidersRecordingId", "true", "string" },
 			{ "AlternativeTitle", "true", "string" },
 			{ "LanguageAndScriptCode", "false", "string" },
-			{ "TitleType", "false", "string" }
+			{ "TitleType", "false", "avs:TitleTypes" }
 	};
 
 	private String[][] RecordingIdentifiers = {
@@ -175,6 +181,12 @@ public class BWARMValidator {
 
 	public BWARMValidator(String base) {
 		BASE_LOCATION = base;
+		PartyRoles = new AVSHelper("PartyRoles.tsv");
+		RightShareTypes = new AVSHelper("RightShareTypes.tsv");
+		RightTypes = new AVSHelper("RightTypes.tsv");
+		Territories = new AVSHelper("Territories.tsv");
+		TitleTypes = new AVSHelper("TitleTypes.tsv");
+		UseTypes = new AVSHelper("UseTypes.tsv");
 	}
 
 	private void initLogger(String snapshot) throws IOException {
@@ -186,11 +198,33 @@ public class BWARMValidator {
 			logger = Files.newBufferedWriter(p, StandardCharsets.UTF_8, StandardOpenOption.CREATE);
 		}
 		log("Snapshot", "File", "Record Id", "Line Number", "Error Message");
+
+		String summaryLocation = BASE_LOCATION + System.getProperty("file.separator") + snapshot + System.getProperty("file.separator") + "validator_summary.tsv";
+		p = Paths.get(summaryLocation);
+		if (p.toFile().exists()) {
+			summary = Files.newBufferedWriter(p, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING);
+		} else {
+			summary = Files.newBufferedWriter(p, StandardCharsets.UTF_8, StandardOpenOption.CREATE);
+		}
+
+		summary.write("Snapshot");
+		summary.write("\t");
+		summary.write("File");
+		summary.write("\t");
+		summary.write("Record Id");
+		summary.write("\t");
+		summary.write("Error Message");
+		summary.write("\t");
+		summary.write("Count");
+		summary.write("\n");
+
 	}
 
 	public void finish() throws IOException {
 		logger.flush();
 		logger.close();
+		summary.flush();
+		summary.close();
 	}
 
 	private synchronized void log(String snapshot, String logType, String id, String lineNumber, String msg) {
@@ -211,6 +245,17 @@ public class BWARMValidator {
 			LOGGER.error("200={} 202={} 204={} 206={}", snapshot, logType, lineNumber, msg);
 			throw new RuntimeException(e);
 		}
+
+		if (!"Snapshot".equals(snapshot)) {
+			String key = snapshot + "\t" + logType + "\t" + msg;
+			int count = 0;
+			if (recurringMessages.containsKey(key)) {
+				count = recurringMessages.get(key);
+			}
+			count++;
+			recurringMessages.put(key, count);
+		}
+
 	}
 
 	private boolean checMandatory(String data, boolean isMandatory) {
@@ -264,6 +309,10 @@ public class BWARMValidator {
 
 	}
 
+	private boolean checkAVS(String value, AVSHelper helper) {
+		return helper.contains(value);
+	}
+
 	private DateTime getDate(String data) {
 		try {
 			DateTimeFormatter parser2 = ISODateTimeFormat.dateTimeNoMillis();
@@ -277,18 +326,8 @@ public class BWARMValidator {
 	private boolean validateAll(String snapshot, int lineNumber, String recrd[], String logType, String[][] schema) {
 		boolean valid = true;
 		if (recrd.length != schema.length) {
-			String key = snapshot + "\t" + logType + "\t" + "\t" + "Incorrect Number of records: expected " + schema.length + " found " + recrd.length;
-			int count = 0;
-			if (recurringMessages.containsKey(key)) {
-				// log(snapshot, logType, "", "Incorrect Number of records: expected " + schema.length + " found " + recrd.length);
-				count = recurringMessages.get(key);
-			} else {
-				LOGGER.debug("LENGTH  linenumber:{}   {}  recrd={}", lineNumber, logType, recrd);
-				LOGGER.debug("LENGTH  linenumber:{}   {}  schema={}", logType, schema.length);
-			}
 
-			count++;
-			recurringMessages.put(key, count);
+			log(snapshot, logType, recrd[0], "" + lineNumber, "Incorrect Number of records: expected " + schema.length + " found " + recrd.length);
 			valid = false;
 		} else {
 			for (int i = 0; i < schema.length; i++) {
@@ -303,29 +342,167 @@ public class BWARMValidator {
 						case "boolean":
 							if (!checkBoolean(recrd[i])) {
 								log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid boolean field " + field[0]);
-								LOGGER.debug("BOOLEAN   {}  i={}  value={}  fields={}", logType, i, recrd[i], field);
+								LOGGER.debug("{}   {}  i={}  value={}  fields={}", field[2], logType, i, recrd[i], field);
 								valid = false;
 							}
 							break;
 						case "number":
 							if (!checNumber(recrd[i])) {
 								log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid number field " + field[0]);
-								LOGGER.debug("NUMBER   {}  i={}  value={}  fields={}", logType, i, recrd[i], field);
+								LOGGER.debug("{}   {}  i={}  value={}  fields={}", field[2], logType, i, recrd[i], field);
 								valid = false;
 							}
 							break;
 						case "duration":
 							if (!checkDuration(recrd[i])) {
 								log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid duration field " + field[0]);
-								LOGGER.debug("DURATION   {}  i={}  value={}  fields={}", logType, i, recrd[i], field);
+								LOGGER.debug("{}   {}  i={}  value={}  fields={}", field[2], logType, i, recrd[i], field);
 								valid = false;
 							}
 							break;
 						case "date":
 							if (!checkDate(recrd[i])) {
 								log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid date field " + field[0]);
-								LOGGER.debug("DATE   {}  i={}  value={}  fields={}", logType, i, recrd[i], field);
+								LOGGER.debug("{}   {}  i={}  value={}  fields={}", field[2], logType, i, recrd[i], field);
 								valid = false;
+							}
+							break;
+
+						case "avs:PartyRoles":
+							if (field.length == 4 && field[3].equals("true")) {
+								String[] values = recrd[i].split("\\|");
+								boolean invalid = false;
+								for (int valIdx = 0; valIdx < values.length && !invalid; valIdx++) {
+									if (!checkAVS(values[valIdx], PartyRoles)) {
+										invalid = true;
+									}
+								}
+								if (invalid) {
+									log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid AVS PartyRole Value field '" + recrd[i] + "'");
+									LOGGER.debug("{}   {}  i={}  value={}  fields={}", field[2], logType, i, recrd[i], field);
+									valid = false;
+								}
+							} else {
+								if (!checkAVS(recrd[i], PartyRoles)) {
+									log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid AVS PartyRole Value field '" + recrd[i] + "'");
+									LOGGER.debug("{}   {}  i={}  value={}  fields={}", field[2], logType, i, recrd[i], field);
+									valid = false;
+								}
+							}
+							break;
+
+						case "avs:RightShareTypes":
+							if (field.length == 4 && field[3].equals("true")) {
+								String[] values = recrd[i].split("\\|");
+								boolean invalid = false;
+								for (int valIdx = 0; valIdx < values.length && !invalid; valIdx++) {
+									if (!checkAVS(values[valIdx], RightShareTypes)) {
+										invalid = true;
+									}
+								}
+								if (invalid) {
+									log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid AVS RightShareType Value field '" + recrd[i] + "'");
+									LOGGER.debug("{}   {}  i={}  value=( {} --> {} ) fields={}", field[2], logType, i, recrd[i], values, field);
+									valid = false;
+								}
+							} else {
+								if (!checkAVS(recrd[i], RightShareTypes)) {
+									log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid AVS RightShareType Value field  '" + recrd[i] + "'");
+									LOGGER.debug("{}   {}  i={}  value={}  fields={}", field[2], logType, i, recrd[i], field);
+									valid = false;
+								}
+							}
+							break;
+
+						case "avs:RightTypes":
+							if (field.length == 4 && field[3].equals("true")) {
+								String[] values = recrd[i].split("\\|");
+								boolean invalid = false;
+								for (int valIdx = 0; valIdx < values.length && !invalid; valIdx++) {
+									if (!checkAVS(values[valIdx], RightTypes)) {
+										invalid = true;
+									}
+								}
+								if (invalid) {
+									log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid AVS RightType Value field '" + recrd[i] + "'");
+									LOGGER.debug("{}   {}  i={}  value=( {} --> {} ) fields={}", field[2], logType, i, recrd[i], values, field);
+									valid = false;
+								}
+							} else {
+								if (!checkAVS(recrd[i], RightTypes)) {
+									log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid AVS RightType Value field '" + recrd[i] + "'");
+									LOGGER.debug("{}   {}  i={}  value={}  fields={}", field[2], logType, i, recrd[i], field);
+									valid = false;
+								}
+							}
+							break;
+
+						case "avs:Territories":
+							if (field.length == 4 && field[3].equals("true")) {
+								String[] values = recrd[i].split("\\|");
+								boolean invalid = false;
+								for (int valIdx = 0; valIdx < values.length && !invalid; valIdx++) {
+									if (!checkAVS(values[valIdx], Territories)) {
+										invalid = true;
+									}
+								}
+								if (invalid) {
+									log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid AVS Territory Value field '" + recrd[i] + "'");
+									LOGGER.debug("{}   {}  i={}  value=( {} --> {} ) fields={}", field[2], logType, i, recrd[i], values, field);
+									valid = false;
+								}
+							} else {
+								if (!checkAVS(recrd[i], Territories)) {
+									log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid AVS Territory Value field '" + recrd[i] + "'");
+									LOGGER.debug("{}   {}  i={}  value={}  fields={}", field[2], logType, i, recrd[i], field);
+									valid = false;
+								}
+							}
+							break;
+
+						case "avs:TitleTypes":
+							if (field.length == 4 && field[3].equals("true")) {
+								String[] values = recrd[i].split("\\|");
+								boolean invalid = false;
+								for (int valIdx = 0; valIdx < values.length && !invalid; valIdx++) {
+									if (!checkAVS(values[valIdx], TitleTypes)) {
+										invalid = true;
+									}
+								}
+								if (invalid) {
+									log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid AVS TitleType Value field '" + recrd[i] + "'");
+									LOGGER.debug("{}   {}  i={}  value=( {} --> {} ) fields={}", field[2], logType, i, recrd[i], values, field);
+									valid = false;
+								}
+							} else {
+								if (!checkAVS(recrd[i], TitleTypes)) {
+									log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid AVS TitleType Value field '" + recrd[i] + "'");
+									LOGGER.debug("{}   {}  i={}  value={}  fields={}", field[2], logType, i, recrd[i], field);
+									valid = false;
+								}
+							}
+							break;
+
+						case "avs:UseTypes":
+							if (field.length == 4 && field[3].equals("true")) {
+								String[] values = recrd[i].split("\\|");
+								boolean invalid = false;
+								for (int valIdx = 0; valIdx < values.length && !invalid; valIdx++) {
+									if (!checkAVS(values[valIdx], UseTypes)) {
+										invalid = true;
+									}
+								}
+								if (invalid) {
+									log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid AVS UseType Value field '" + recrd[i] + "'");
+									LOGGER.debug("{}   {}  i={}  value=( {} --> {} ) fields={}", field[2], logType, i, recrd[i], values, field);
+									valid = false;
+								}
+							} else {
+								if (!checkAVS(recrd[i], UseTypes)) {
+									log(snapshot, logType, recrd[0], "" + lineNumber, "Invalid AVS UseType Value field '" + recrd[i] + "'");
+									LOGGER.debug("{}   {}  i={}  value={}  fields={}", field[2], logType, i, recrd[i], field);
+									valid = false;
+								}
 							}
 							break;
 
@@ -464,6 +641,16 @@ public class BWARMValidator {
 						// check conditional fields
 						if (rec[7].equals("") && rec[8].equals("")) {
 							log(snapshot, "workrightshares", rec[0], "" + workrightsharesLineNumber, "Condition not fulfilled for " + WorkRightShares[7][0] + " and " + WorkRightShares[8][0]);
+							// String key = snapshot + "\t" + rec[0] + "\t" + "\t" + "Condition not fulfilled for " + WorkRightShares[7][0] + " and " + WorkRightShares[8][0];
+							// int count = 0;
+							// if (recurringMessages.containsKey(key)) {
+							// count = recurringMessages.get(key);
+							// } else {
+							// LOGGER.debug("LENGTH linenumber:{} {} recrd={}", workrightsharesLineNumber, rec[0], rec);
+							// LOGGER.debug("LENGTH linenumber:{} {} schema={}", rec[0], WorkRightShares.length);
+							// }
+							// recurringMessages.put(key, count);
+
 						}
 						if (!rec[7].equals("") && !rec[8].equals("")) {
 							DateTime start = getDate(rec[7]);
@@ -791,7 +978,8 @@ public class BWARMValidator {
 
 		for (String key : keys) {
 			int count = recurringMessages.get(key);
-			logger.write(key + "(Found " + count + " times)\n");
+			// logger.write(key + "(Found " + count + " times)\n");
+			summary.write(key + "\t" + count);
 		}
 
 		finish();
