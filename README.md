@@ -4,9 +4,11 @@ Validator for the BWARM Standard.
 Details of the Standard: https://kb.ddex.net/display/BWARM
 
 ## Current Version
-1.0.0
+1.0.1
 
 ## Current Validations 
+* AVS Validation
+* AVS Multi-Value Validations
 * Number of Fields in each record is as expected
 * Mandatory Fields are filled out
 * Mandatory Fields are of correct type
